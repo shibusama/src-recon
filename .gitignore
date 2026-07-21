@@ -1,0 +1,7 @@
+.agents/
+AGENTS.md
+*.json
+*.html
+*.txt
+__pycache__/
+*.pyc
