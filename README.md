@@ -137,10 +137,9 @@ src-recon/
 ├── README.md
 ├── .gitignore
 ├── asset_collector.py          # 增强版（含指纹识别）
-└── lenovo-recon/
-    ├── asset_recon.py          # 全面版（含 ASN/FOFA）
-    ├── recon.py                # 轻量版
-    ── results/                # 收集结果输出目录
+├── asset_recon.py              # 全面版（含 ASN/FOFA）
+├── recon.py                    # 轻量版
+└── results/                    # 收集结果输出目录
 ```
 
 ## 使用建议
