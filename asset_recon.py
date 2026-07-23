@@ -931,6 +931,152 @@ def save_json(data, filename):
     return path
 
 
+def generate_html_report(domain, resolved, all_ips, asn_info, open_ports,
+                         services, http_results, fofa_results):
+    """生成自包含的 HTML 报告（无外部依赖，可直接浏览器打开）"""
+    now = time.strftime('%Y-%m-%d %H:%M:%S')
+
+    asn_orgs = defaultdict(list)
+    for info in asn_info:
+        asn_orgs[info.get("org", "Unknown")].append(info["ip"])
+    status_counts = defaultdict(int)
+    for r in http_results:
+        status_counts[r["status"]] += 1
+
+    rows_html = ""
+    for r in sorted(http_results, key=lambda x: x["status"]):
+        url = r.get("url") or r.get("subdomain", "")
+        title = (r.get("title") or "")[:60]
+        server = (r.get("server") or "")[:30]
+        tech = ", ".join(r.get("tech", []))
+        waf = ", ".join(r.get("waf", []))
+        color = "#22c55e" if r["status"] < 300 else "#eab308" if r["status"] < 400 else "#ef4444"
+        rows_html += f"""<tr>
+            <td><span class="status" style="background:{color}">{r['status']}</span></td>
+            <td><a href="{url}" target="_blank">{url[:70]}</a></td>
+            <td>{title}</td>
+            <td>{server}</td>
+            <td>{tech}</td>
+            <td>{waf}</td>
+        </tr>\n"""
+
+    subs_html = ""
+    for sub in sorted(resolved.keys()):
+        subs_html += f"<tr><td>{sub}</td><td>{', '.join(resolved[sub])}</td></tr>\n"
+
+    # 状态码分布 summary
+    status_dist = ""
+    for code in sorted(status_counts.keys()):
+        color = "#22c55e" if code < 300 else "#eab308" if code < 400 else "#ef4444"
+        status_dist += f'<span class="sub-status" style="background:{color}">{code}: {status_counts[code]}</span> '
+
+    ports_html = ""
+    if open_ports:
+        ports_html = "<table><tr><th>IP</th><th>开放端口</th></tr>\n"
+        for ip in sorted(open_ports.keys()):
+            ports_html += f"<tr><td>{ip}</td><td>{', '.join(str(p) for p in sorted(open_ports[ip]))}</td></tr>\n"
+        ports_html += "</table>"
+
+    asn_html = ""
+    if asn_info:
+        asn_html = "<h2>ASN / 组织分布</h2><table><tr><th>组织</th><th>IP 数量</th><th>示例 IP</th></tr>\n"
+        for org, ips in sorted(asn_orgs.items(), key=lambda x: -len(x[1])):
+            sample = ", ".join(sorted(ips)[:3])
+            if len(ips) > 3:
+                sample += f" ... (共 {len(ips)} 个)"
+            asn_html += f"<tr><td>{org}</td><td>{len(ips)}</td><td>{sample}</td></tr>\n"
+        asn_html += "</table>"
+
+    svc_html = ""
+    if services:
+        svc_html = "<h2>服务识别</h2><table><tr><th>IP</th><th>端口</th><th>服务</th><th>SSL</th><th>Banner</th></tr>\n"
+        for svc in sorted(services, key=lambda x: (x["ip"], x["port"])):
+            ssl_tag = "Y" if svc["ssl"] else ""
+            banner = svc["banner"][:80].replace("\n", " ").replace("\r", "") if svc["banner"] else ""
+            svc_html += f"<tr><td>{svc['ip']}</td><td>{svc['port']}</td><td>{svc['service']}</td><td>{ssl_tag}</td><td>{banner}</td></tr>\n"
+        svc_html += "</table>"
+
+    fofa_html = ""
+    if fofa_results:
+        fofa_html = "<h2>FOFA 结果</h2><table><tr><th>#</th><th>结果</th></tr>\n"
+        for i, item in enumerate(fofa_results[:50], 1):
+            fofa_html += f"<tr><td>{i}</td><td>{item}</td></tr>\n"
+        fofa_html += "</table>"
+
+    total_open = sum(len(v) for v in open_ports.values()) if open_ports else 0
+    redir = status_counts.get(301, 0) + status_counts.get(302, 0) + status_counts.get(307, 0)
+    errors = sum(c for c in status_counts.values() if c >= 400)
+
+    html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{domain} - 资产收集报告</title>
+<style>
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; padding: 0; }}
+.container {{ max-width: 1200px; margin: 0 auto; padding: 20px; }}
+.header {{ background: linear-gradient(135deg, #1e293b, #0f172a); border-bottom: 1px solid #334155; padding: 30px 0; margin-bottom: 30px; }}
+.header h1 {{ font-size: 28px; color: #f8fafc; }}
+.header .meta {{ color: #94a3b8; margin-top: 8px; font-size: 14px; }}
+.stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 16px; margin-bottom: 30px; }}
+.stat-card {{ background: #1e293b; border-radius: 12px; padding: 20px; text-align: center; border: 1px solid #334155; }}
+.stat-card .num {{ font-size: 32px; font-weight: 700; color: #3b82f6; }}
+.stat-card .label {{ font-size: 13px; color: #94a3b8; margin-top: 4px; }}
+.stat-card.green .num {{ color: #22c55e; }}
+.stat-card.yellow .num {{ color: #eab308; }}
+.stat-card.red .num {{ color: #ef4444; }}
+h2 {{ font-size: 20px; margin: 24px 0 12px; color: #f1f5f9; border-left: 4px solid #3b82f6; padding-left: 12px; }}
+table {{ width: 100%; border-collapse: collapse; margin-bottom: 24px; background: #1e293b; border-radius: 8px; overflow: hidden; }}
+th, td {{ padding: 10px 14px; text-align: left; border-bottom: 1px solid #334155; font-size: 13px; }}
+th {{ background: #334155; color: #94a3b8; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }}
+tr:hover {{ background: #2d3a4e; }}
+.status {{ display: inline-block; padding: 2px 8px; border-radius: 4px; color: #fff; font-weight: 600; font-size: 12px; }}
+a {{ color: #60a5fa; text-decoration: none; }}
+a:hover {{ text-decoration: underline; }}
+.sub-status {{ display: inline-block; padding: 2px 8px; border-radius: 4px; color: #fff; font-size: 12px; margin: 2px; }}
+.footer {{ text-align: center; padding: 30px; color: #64748b; font-size: 13px; border-top: 1px solid #334155; margin-top: 40px; }}
+</style>
+</head>
+<body>
+<div class="header">
+<div class="container">
+<h1>{domain} — 资产收集报告</h1>
+<div class="meta">生成时间: {now} &nbsp;|&nbsp; {status_dist}</div>
+</div>
+</div>
+<div class="container">
+<div class="stats">
+<div class="stat-card"><div class="num">{len(resolved)}</div><div class="label">子域名</div></div>
+<div class="stat-card"><div class="num">{len(all_ips)}</div><div class="label">唯一 IP</div></div>
+<div class="stat-card"><div class="num">{total_open}</div><div class="label">开放端口</div></div>
+<div class="stat-card green"><div class="num">{status_counts.get(200, 0)}</div><div class="label">HTTP 200</div></div>
+<div class="stat-card yellow"><div class="num">{redir}</div><div class="label">重定向</div></div>
+<div class="stat-card red"><div class="num">{errors}</div><div class="label">异常</div></div>
+</div>
+
+<h2>子域名列表 ({len(resolved)})</h2>
+<table><tr><th>子域名</th><th>IP 地址</th></tr>
+{subs_html}</table>
+
+<h2>HTTP 服务 ({len(http_results)})</h2>
+<table><tr><th>状态</th><th>URL</th><th>标题</th><th>服务器</th><th>指纹</th><th>WAF</th></tr>
+{rows_html}</table>
+
+{ports_html}{asn_html}{svc_html}{fofa_html}
+<div class="footer">Generated by SRC-Recon &middot; {now}</div>
+</div>
+</body>
+</html>"""
+
+    report_file = OUTPUT_DIR / f"{domain}_report.html"
+    with open(report_file, "w", encoding="utf-8") as f:
+        f.write(html)
+    log(f"HTML 报告已保存: {report_file}", "ok")
+    return report_file
+
+
 # ══════════════════════════════════════════════════════════════
 #  模块 10：轻量模式（供 recon.py 调用）
 # ══════════════════════════════════════════════════════════════
@@ -1107,6 +1253,8 @@ def run_full(domain, args):
     # 10. 生成报告
     generate_report(domain, resolved, all_ips, asn_info, open_ports,
                     services, http_results, fofa_results)
+    generate_html_report(domain, resolved, all_ips, asn_info, open_ports,
+                         services, http_results, fofa_results)
 
     elapsed = time.time() - start
     log(f"{'=' * 50}")
