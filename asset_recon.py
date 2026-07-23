@@ -441,10 +441,26 @@ def collect_asn_info(ips, max_workers=10):
 # ══════════════════════════════════════════════════════════════
 
 def check_nmap():
-    """检查 python-nmap 包是否可用（pip install python-nmap）"""
+    """检查 python-nmap 包和 nmap 二进制是否可用"""
     try:
         import nmap
-        return True
+        # 如果 PATH 找不到，试试常见安装路径
+        try:
+            nmap.PortScanner().nmap_version()
+            return True
+        except Exception:
+            common_paths = [
+                r"C:\Program Files (x86)\Nmap",
+                r"C:\Program Files\Nmap",
+                "/usr/bin",
+                "/usr/local/bin",
+            ]
+            for p in common_paths:
+                if Path(p, "nmap").exists() or Path(p, "nmap.exe").exists():
+                    import os
+                    os.environ["PATH"] = str(p) + os.pathsep + os.environ.get("PATH", "")
+                    return True
+            return False
     except ImportError:
         return False
 
