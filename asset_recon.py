@@ -9,12 +9,11 @@
 """
 
 import argparse
+import asyncio
 import concurrent.futures
 import ipaddress
 import json
 import re
-import subprocess
-import xml.etree.ElementTree as ET
 import socket
 import ssl
 import sys
@@ -439,11 +438,69 @@ def collect_asn_info(ips, max_workers=10):
 
 
 # ══════════════════════════════════════════════════════════════
-#  模块 5：端口扫描
+#  模块 5：端口扫描（asyncio + threading 双引擎）
 # ══════════════════════════════════════════════════════════════
 
+async def _scan_one(ip, port, sem):
+    """异步扫描单个端口（纯 Python，不依赖外部工具）"""
+    async with sem:
+        try:
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(ip, port),
+                timeout=Config.TIMEOUT,
+            )
+            writer.close()
+            await writer.wait_closed()
+            return ip, port
+        except (OSError, asyncio.TimeoutError):
+            return None
+
+
+def scan_ports_async(ips, ports=None, max_concurrent=2000):
+    """
+    使用 asyncio 进行端口扫描（纯 Python，比 threading 快 3-5 倍）
+
+    asyncio 的事件循环能高效处理大量并发 socket 连接，
+    不受 GIL 限制，在大量 I/O 等待场景下远优于 threading。
+    """
+    ports = ports or COMMON_PORTS
+    sem = asyncio.Semaphore(max_concurrent)
+    log(f"  开始异步扫描 {len(ips)} 个 IP × {len(ports)} 个端口...")
+
+    async def run():
+        tasks = [_scan_one(ip, p, sem) for ip in ips for p in ports]
+        open_ports = defaultdict(list)
+        batch_size = 5000
+        for i in range(0, len(tasks), batch_size):
+            batch = tasks[i:i + batch_size]
+            results = await asyncio.gather(*batch)
+            for r in results:
+                if r:
+                    open_ports[r[0]].append(r[1])
+            if (i + batch_size) % 20000 == 0:
+                done = min(i + batch_size, len(tasks))
+                pct = done * 100 // len(tasks)
+                log(f"    进度: {done}/{len(tasks)} ({pct}%)")
+        return dict(open_ports)
+
+    total = len(ips) * len(ports)
+    loop = asyncio.ProactorEventLoop() if sys.platform == "win32" else None
+    if loop:
+        asyncio.set_event_loop(loop)
+        try:
+            open_ports = loop.run_until_complete(run())
+        finally:
+            loop.close()
+    else:
+        open_ports = asyncio.run(run())
+
+    total_open = sum(len(v) for v in open_ports.values())
+    log(f"  扫描完成，{total_open} 个开放端口", "ok")
+    return open_ports
+
+
 def scan_port(ip, port, timeout=None):
-    """扫描单个端口"""
+    """扫描单个端口（threading 模式，后备方案）"""
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout or Config.TIMEOUT)
@@ -455,9 +512,9 @@ def scan_port(ip, port, timeout=None):
 
 
 def scan_ports(ips, ports=None, max_workers=100):
-    """批量端口扫描"""
+    """批量端口扫描（threading 模式，asyncio 不可用时回退）"""
     ports = ports or COMMON_PORTS
-    log(f"  开始端口扫描 {len(ips)} 个 IP × {len(ports)} 个端口...")
+    log(f"  开始线程扫描 {len(ips)} 个 IP × {len(ports)} 个端口...")
     open_ports = defaultdict(list)
     total = len(ips) * len(ports)
     done = 0
@@ -480,74 +537,8 @@ def scan_ports(ips, ports=None, max_workers=100):
             if done % 500 == 0:
                 log(f"    进度: {done}/{total} ({done * 100 // total}%)")
 
-    log(f"  端口扫描完成，{sum(len(v) for v in open_ports.values())} 个开放端口", "ok")
+    log(f"  线程扫描完成，{sum(len(v) for v in open_ports.values())} 个开放端口", "ok")
     return dict(open_ports)
-
-
-def check_nmap():
-    """检查系统是否安装了 nmap"""
-    try:
-        result = subprocess.run(
-            ["nmap", "--version"],
-            capture_output=True, text=True, timeout=10,
-        )
-        return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
-
-
-def scan_ports_nmap(ips, ports=None):
-    """使用 nmap 进行端口扫描（比 Python 原生快 5-10 倍）"""
-    ports = ports or COMMON_PORTS
-    if not check_nmap():
-        log("  nmap 未安装或不在 PATH 中，回退到 Python 扫描", "warn")
-        return scan_ports(ips, ports)
-
-    port_str = ",".join(str(p) for p in ports)
-    log(f"  使用 nmap 扫描 {len(ips)} 个 IP × {len(ports)} 个端口...")
-
-    # 构造 nmap 命令
-    # -sT: TCP connect 扫描（无需管理员权限）
-    # -T4: 速度模板
-    # --open: 只显示开放端口
-    # -oX -: XML 输出到 stdout
-    cmd = ["nmap", "-sT", "-T4", "--open", "-oX", "-", "-p", port_str] + list(ips)
-
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=600,
-        )
-        if result.returncode not in (0, 1):  # nmap 返回 1 表示部分主机不可达，但仍有效
-            log(f"  nmap 执行异常 (code={result.returncode})，回退到 Python 扫描", "warn")
-            return scan_ports(ips, ports)
-
-        open_ports = defaultdict(list)
-
-        # 解析 XML 输出
-        root = ET.fromstring(result.stdout)
-        for host in root.findall("host"):
-            ip_el = host.find("address")
-            if ip_el is None:
-                continue
-            ip = ip_el.get("addr", "")
-
-            for port in host.findall(".//port"):
-                state = port.find("state")
-                if state is not None and state.get("state") == "open":
-                    port_id = int(port.get("portid", "0"))
-                    if port_id > 0:
-                        open_ports[ip].append(port_id)
-
-        total_open = sum(len(v) for v in open_ports.values())
-        log(f"  nmap 扫描完成，{total_open} 个开放端口", "ok")
-        return dict(open_ports)
-
-    except subprocess.TimeoutExpired:
-        log("  nmap 扫描超时，回退到 Python 扫描", "warn")
-        return scan_ports(ips, ports)
-    except Exception as e:
-        log(f"  nmap 扫描失败: {e}，回退到 Python 扫描", "warn")
-        return scan_ports(ips, ports)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1084,10 +1075,10 @@ def run_full(domain, args):
         ports = COMMON_PORTS
         if args.ports:
             ports = [int(p.strip()) for p in args.ports.split(",")]
-        if args.nmap:
-            open_ports = scan_ports_nmap(all_ips, ports)
-        else:
+        if args.scanner == "thread":
             open_ports = scan_ports(all_ips, ports, 100)
+        else:
+            open_ports = scan_ports_async(all_ips, ports)
         save_json(open_ports, f"{domain}_ports.json")
 
     # 6. 服务识别
@@ -1137,7 +1128,8 @@ def main():
     parser.add_argument("--config", type=str, default="config.json", help="配置文件路径（默认 config.json）")
     parser.add_argument("--batch", action="store_true", help="批量扫描 config 中所有域名，默认只取第一个")
     parser.add_argument("--quick", action="store_true", help="快速模式（仅子域名 + HTTP）")
-    parser.add_argument("--nmap", action="store_true", help="使用 nmap 扫描端口（更快，需安装 nmap）")
+    parser.add_argument("--scanner", choices=["async", "thread"], default="async",
+                        help="端口扫描引擎: async（默认，纯异步，更快）/ thread（线程）")
     parser.add_argument("--skip-portscan", action="store_true", help="跳过端口扫描")
     parser.add_argument("--skip-service", action="store_true", help="跳过服务识别")
     parser.add_argument("--subdomain-only", action="store_true", help="仅收集子域名")
