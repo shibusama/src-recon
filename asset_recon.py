@@ -486,7 +486,7 @@ def scan_ports_nmap(ips, ports=None):
 
     for ip in ips:
         try:
-            result = nm.scan(hosts=ip, ports=port_str, arguments="--open -T4")
+            result = nm.scan(hosts=ip, ports=port_str, arguments="-sS --open -T4")
             if ip not in result.get("scan", {}):
                 continue
             host_data = result["scan"][ip]
@@ -1082,7 +1082,7 @@ def run_full(domain, args):
         if args.scanner == "nmap":
             open_ports = scan_ports_nmap(all_ips, ports)
         else:
-            open_ports = scan_ports_async(all_ips, ports)
+            open_ports = scan_ports(all_ips, ports, 100)
         save_json(open_ports, f"{domain}_ports.json")
 
     # 6. 服务识别
@@ -1132,8 +1132,8 @@ def main():
     parser.add_argument("--config", type=str, default="config.json", help="配置文件路径（默认 config.json）")
     parser.add_argument("--batch", action="store_true", help="批量扫描 config 中所有域名，默认只取第一个")
     parser.add_argument("--quick", action="store_true", help="快速模式（仅子域名 + HTTP）")
-    parser.add_argument("--scanner", choices=["nmap", "thread"], default="thread",
-                        help="端口扫描引擎: nmap（需 pip install python-nmap）/ thread（默认，纯Python）")
+    parser.add_argument("--scanner", choices=["nmap", "thread"], default="nmap",
+                        help="端口扫描引擎: nmap（默认，半开扫描，痕迹少）/ thread（纯Python）")
     parser.add_argument("--skip-portscan", action="store_true", help="跳过端口扫描")
     parser.add_argument("--skip-service", action="store_true", help="跳过服务识别")
     parser.add_argument("--subdomain-only", action="store_true", help="仅收集子域名")
