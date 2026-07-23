@@ -6,9 +6,8 @@
 
 | 脚本 | 类型 | 说明 |
 |------|------|------|
-| `asset_recon.py` | 全面版 | 子域名收集 + DNS 解析 + ASN 查询 + 端口扫描 + 服务识别 + HTTP 探测 + FOFA 接口 |
-| `recon.py` | 轻量版 | 专注子域名收集 + HTTP 探测，速度快，适合快速摸底 |
-| `asset_collector.py` | 增强版 | 子域名收集 + DNS 解析 + 端口扫描 + HTTP 探测 + 指纹识别（含 CMS/WAF/框架识别） |
+| `asset_recon.py` | 综合版 | **推荐** — 全部功能：子域名收集 + DNS 爆破 + ASN 查询 + 端口扫描 + 服务识别 + HTTP 探测 + 指纹识别 + FOFA 接口 |
+| `recon.py` | 轻量版 | 快速摸底，子域名收集 + HTTP 探测（复用 asset_recon.py） |
 
 ## 快速开始
 
@@ -18,61 +17,102 @@
 pip install dnspython requests pyyaml beautifulsoup4
 ```
 
-### asset_recon.py（全面版）
+### 方式一：指定域名（最常用）
 
 ```bash
-# 基础用法
+# 全面扫描
 python3 asset_recon.py example.com
 
-# 快速模式（跳过端口扫描和服务识别）
+# 快速摸底
+python3 recon.py example.com
+```
+
+### 方式二：配置文件（批量管理目标）
+
+编辑 `config.json` 放入你的目标列表：
+
+```json
+{
+  "domains": ["target1.com", "target2.org", "target3.io"],
+  "workers": 50
+}
+```
+
+然后直接运行脚本（无需输入域名）：
+
+```bash
+# 扫描 config 中的第一个域名
+python3 asset_recon.py
+
+# 扫描 config 中所有域名
+python3 asset_recon.py --batch
+
+# 批量快速摸底所有域名
+python3 asset_recon.py --batch --quick
+python3 recon.py --batch
+```
+
+### asset_recon.py（综合版）
+
+```bash
+# 全量扫描（推荐）
+python3 asset_recon.py example.com
+
+# 从配置文件读取域名
+python3 asset_recon.py
+
+# 批量扫描所有配置域名
+python3 asset_recon.py --batch
+
+# 快速模式（仅子域名 + HTTP 探测）
+python3 asset_recon.py example.com --quick
+python3 asset_recon.py --batch --quick
+
+# 跳过端口扫描和服务识别
 python3 asset_recon.py example.com --skip-portscan --skip-service
+
+# 仅子域名收集
+python3 asset_recon.py example.com --subdomain-only
 
 # 指定端口
 python3 asset_recon.py example.com --ports 80,443,8080,8443
 
+# 指定输出目录
+python3 asset_recon.py example.com -o ./my_results
+
 # 配置 FOFA API
 python3 asset_recon.py example.com --fofa-email your@email.com --fofa-key your_api_key
+
+# 使用自定义配置文件
+python3 asset_recon.py --config my_domains.json --batch
 
 # 调整并发数
 python3 asset_recon.py example.com --workers 100
 ```
 
-### recon.py（轻量版）
+### recon.py（轻量版 — 快速摸底）
 
 ```bash
+# 用法同 --quick，适合随手摸一下
 python3 recon.py example.com
-```
-
-### asset_collector.py（增强版）
-
-```bash
-# 基础用法
-python3 asset_collector.py -d example.com
-
-# 指定输出目录
-python3 asset_collector.py -d example.com -o ./output
-
-# 仅子域名收集
-python3 asset_collector.py -d example.com --subdomain-only
-
-# 指定端口范围
-python3 asset_collector.py -d example.com --ports 80,443,8080
+python3 recon.py              # 从 config.json 读取域名
+python3 recon.py --batch      # 批量快速摸底
 ```
 
 ## 功能模块对比
 
-| 功能 | asset_recon.py | recon.py | asset_collector.py |
-|------|:-:|:-:|:-:|
-| 子域名被动收集 | ✅ | ✅ | ✅ |
-| DNS 爆破 | ✅ | ✅ | ✅ |
-| DNS 解析验证 | ✅ | ✅ | ✅ |
-| ASN / 组织查询 | ✅ | ❌ | ❌ |
-| 端口扫描 | ✅ | ❌ | ✅ |
-| 服务识别 | ✅ | ❌ | ✅ |
-| HTTP 探测 | ✅ | ✅ | ✅ |
-| 指纹识别（CMS/WAF） | ❌ | ❌ | ✅ |
-| FOFA 接口 | ✅ | ❌ | ❌ |
-| 报告生成 | ✅ | ✅ | ✅ |
+| 功能 | asset_recon.py | recon.py |
+|------|:-:|:-:|
+| 子域名被动收集（6 源） | ✅ | ✅ |
+| DNS 爆破 | ✅ | ✅ |
+| DNS 解析验证 | ✅ | ✅ |
+| ASN / 组织查询 | ✅ | ❌ |
+| 端口扫描 | ✅ | ❌ |
+| 服务识别 | ✅ | ❌ |
+| HTTP 探测 | ✅ | ✅ |
+| 指纹识别（CMS/WAF/框架） | ✅ | ✅ |
+| FOFA 接口 | ✅ | ❌ |
+| 报告生成 | ✅ | ✅ |
 
 ### 各模块说明
 
@@ -107,9 +147,9 @@ python3 asset_collector.py -d example.com --ports 80,443,8080
 
 对所有子域名进行 HTTP/HTTPS 探测，获取状态码、页面标题、Server 头等信息。
 
-**7. 指纹识别（asset_collector.py 独有）**
+**7. 指纹识别**
 
-识别目标使用的 CMS（WordPress、Drupal 等）、WAF（Cloudflare、Akamai 等）、Web 框架和中间件。
+识别目标使用的 CMS（WordPress、Drupal 等）、Web 框架（Spring、Django、Vue 等）、中间件（Nginx、Tomcat 等）和 WAF（Cloudflare、Akamai 等）。通过响应头和页面内容进行匹配。
 
 **8. FOFA 接口（asset_recon.py 独有）**
 
@@ -122,13 +162,13 @@ python3 asset_collector.py -d example.com --ports 80,443,8080
 | 文件 | 说明 |
 |------|------|
 | `{domain}_subdomains.json` | 子域名及对应 IP |
-| `{domain}_asn.json` | ASN 和组织信息（asset_recon.py） |
+| `{domain}_asn.json` | ASN 和组织信息 |
 | `{domain}_ports.json` | 开放端口 |
 | `{domain}_services.json` | 服务识别结果 |
-| `{domain}_http.json` | HTTP 探测结果 |
-| `{domain}_full_report.txt` | 综合文本报告 |
-| `{domain}_report.txt` | 轻量版报告（recon.py） |
-| `{domain}_assets_table.html` | HTML 分类表格报告 |
+| `{domain}_http.json` | HTTP 探测结果（含指纹） |
+| `{domain}_http_ports.json` | 基于端口的 HTTP 探测结果 |
+| `{domain}_full_report.txt` | 综合文本报告（full 模式） |
+| `{domain}_quick_report.txt` | 快速摸底报告（--quick 模式） |
 
 ## 项目结构
 
@@ -136,18 +176,18 @@ python3 asset_collector.py -d example.com --ports 80,443,8080
 src-recon/
 ├── README.md
 ├── .gitignore
-├── asset_collector.py          # 增强版（含指纹识别）
-├── asset_recon.py              # 全面版（含 ASN/FOFA）
-├── recon.py                    # 轻量版
+├── asset_recon.py              # [推荐] 综合版（全部功能）
+├── recon.py                    # 轻量版（复用 asset_recon.py）
 └── results/                    # 收集结果输出目录
 ```
 
 ## 使用建议
 
-- **快速摸底** → 用 `recon.py`，速度快，几分钟出结果
-- **全面收集** → 用 `asset_recon.py`，覆盖 ASN、端口、服务、FOFA
-- **深度探测** → 用 `asset_collector.py`，额外提供 CMS/WAF 指纹识别
-- **组合使用** → 先用 `recon.py` 快速摸底，再用 `asset_recon.py` 深入扫描
+- **快速摸底** → `python3 recon.py example.com` 或 `python3 asset_recon.py example.com --quick`
+- **全面收集** → `python3 asset_recon.py example.com`（端口扫描、服务识别、ASN、FOFA 全开）
+- **定向任务** → `python3 asset_recon.py example.com --subdomain-only`（仅看子域名）
+- **日常顺手** → 把常用目标写进 `config.json`，然后直接 `python3 recon.py`
+- **批量巡检** → 编辑 `config.json` 放入多个目标，`python3 asset_recon.py --batch --quick` 一键跑完
 
 ## 注意事项
 
