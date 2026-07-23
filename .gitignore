@@ -1,7 +1,9 @@
 .agents/
 AGENTS.md
 *.json
+!config.json
 *.html
 *.txt
 __pycache__/
 *.pyc
+results/
