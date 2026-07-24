@@ -831,8 +831,227 @@ def fofa_query(domain, email=None, key=None, size=100):
 
 
 # ══════════════════════════════════════════════════════════════
-#  模块 9：报告生成
+#  模块 9：Wayback Machine 历史记录
 # ══════════════════════════════════════════════════════════════
+
+def fetch_wayback_urls(domain, limit=500):
+    """
+    从 Wayback Machine CDX 拉取历史 URL
+
+    找到被遗忘的旧路径、旧接口、已下线的页面。
+    这些资产不在当前 DNS 记录中，但可能仍可访问。
+    """
+    log("  查询 Wayback Machine 历史存档...")
+    try:
+        url = f"http://web.archive.org/cdx/search/cdx?url=*.{domain}/*&output=json&fl=original,timestamp,statuscode&limit={limit}&collapse=urlkey"
+        resp = requests.get(url, timeout=30)
+        if resp.status_code == 200:
+            data = resp.json()
+            if len(data) > 1:
+                # 第一行是表头，跳过
+                urls = set()
+                paths = set()
+                for row in data[1:]:
+                    if len(row) >= 1:
+                        original_url = row[0]
+                        urls.add(original_url)
+                        # 提取路径
+                        from urllib.parse import urlparse
+                        parsed = urlparse(original_url)
+                        if parsed.path and parsed.path != "/":
+                            paths.add(parsed.path)
+                log(f"  Wayback Machine → {len(urls)} 个历史 URL, {len(paths)} 个路径", "ok")
+                return {"urls": sorted(urls), "paths": sorted(paths)}
+    except Exception as e:
+        log(f"  Wayback Machine 查询失败: {e}", "warn")
+    return {"urls": [], "paths": []}
+
+
+# ══════════════════════════════════════════════════════════════
+#  模块 10：JS 自动扒接口
+# ══════════════════════════════════════════════════════════════
+
+def analyze_js(url, headers=None):
+    """
+    下载页面 JS 文件，提取 API 接口、路径、密钥
+
+    扫描器不会主动解析 JS，大量隐藏接口藏在 JS 文件里。
+    """
+    hdrs = headers or HEADERS
+    results = {"endpoints": set(), "paths": set(), "domains": set(), "secrets": set()}
+
+    try:
+        # 获取页面 HTML
+        resp = requests.get(url, headers=hdrs, timeout=10, verify=False)
+        if resp.status_code != 200:
+            return results
+
+        html = resp.text
+        import re
+
+        # 提取所有 JS 文件 URL
+        js_urls = set()
+        for m in re.finditer(r'src=[\'"]([^\'"]+\.js[^\'"]*)[\'"]', html, re.I):
+            js_url = m.group(1)
+            if js_url.startswith("//"):
+                js_url = "https:" + js_url
+            elif js_url.startswith("/"):
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                js_url = f"{parsed.scheme}://{parsed.netloc}{js_url}"
+            js_urls.add(js_url)
+
+        # 内联 JS 也扫描
+        inline_scripts = re.findall(r'<script[^>]*>([^<]+)</script>', html, re.I | re.S)
+
+        # 下载并分析每个 JS 文件
+        all_js_content = ""
+        for js_url in js_urls:
+            try:
+                js_resp = requests.get(js_url, headers=hdrs, timeout=10, verify=False)
+                if js_resp.status_code == 200:
+                    all_js_content += js_resp.text + "\n"
+            except Exception:
+                pass
+
+        # 也分析内联 JS
+        for script in inline_scripts:
+            all_js_content += script + "\n"
+
+        if not all_js_content:
+            return results
+
+        # 提取 baseURL / api 路径
+        for m in re.finditer(r'["\'](https?://[^"\']+(?:api|v[1-9]|rest|graphql)[^"\']*)["\']', all_js_content, re.I):
+            results["endpoints"].add(m.group(1))
+
+        for m in re.finditer(r'["\']((?:/[a-zA-Z0-9_/-]*)?api[a-zA-Z0-9_/-]*)["\']', all_js_content, re.I):
+            results["paths"].add(m.group(1))
+
+        # 提取 baseURL 配置
+        for m in re.finditer(r'baseURL\s*[=:]\s*["\']([^"\']+)["\']', all_js_content):
+            results["paths"].add(m.group(1))
+
+        # 提取 WebSocket 地址
+        for m in re.finditer(r'["\'](wss?://[^"\']+)["\']', all_js_content):
+            results["endpoints"].add(m.group(1))
+
+        # 提取内网域名
+        for m in re.finditer(r'["\'](https?://(?:10\.|172\.|192\.168\.)[^"\']+)["\']', all_js_content):
+            results["domains"].add(m.group(1))
+
+        # 提取硬编码密钥/Token（常见的变量名）
+        for m in re.finditer(r'["\'][A-Za-z0-9+/=]{20,}["\']', all_js_content):
+            potential = m.group(0).strip("\"'")
+            if len(potential) >= 20 and not potential.isdigit():
+                results["secrets"].add(potential[:50])
+
+        log(f"  JS 分析 → {len(js_urls)} 个 JS, {len(results['endpoints'])} 个接口, {len(results['paths'])} 个路径", "ok")
+        return {k: sorted(v) for k, v in results.items()}
+
+    except Exception as e:
+        log(f"  JS 分析失败: {e}", "warn")
+        return results
+
+
+# ══════════════════════════════════════════════════════════════
+#  模块 11：DNS 历史记录查询
+# ══════════════════════════════════════════════════════════════
+
+def query_dns_history(domain):
+    """
+    查询 DNS 历史解析记录
+
+    通过免费 API 查找域名曾经解析到的 IP，发现已下线但可能仍可用的资产。
+    使用 securitytrails 免费 API（无需 key 可查有限数据）。
+    """
+    log("  查询 DNS 历史记录...")
+    history = {"a": [], "ns": [], "mx": [], "cname": []}
+
+    # 方法1：SecurityTrails 免费 API（无需 key）
+    try:
+        resp = requests.get(
+            f"https://api.securitytrails.com/v1/domain/{domain}/history/a",
+            headers={"Accept": "application/json"},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            for record in data.get("records", []):
+                if record.get("type") == "A":
+                    for r in record.get("values", []):
+                        if r.get("ip"):
+                            history["a"].append(r["ip"])
+            log(f"  SecurityTrails → {len(history['a'])} 个历史 IP", "ok")
+            return {k: list(set(v)) for k, v in history.items()}
+    except Exception:
+        pass
+
+    # 方法2：ViewDNS 免费查询（备选）
+    try:
+        resp = requests.get(
+            f"https://viewdns.info/iphistory/?domain={domain}",
+            headers={"User-Agent": HEADERS["User-Agent"]},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            import re
+            ips = re.findall(r'<tr><td>(\d+\.\d+\.\d+\.\d+)</td>', resp.text)
+            if ips:
+                history["a"] = ips[:20]
+                log(f"  ViewDNS → {len(ips)} 个历史 IP", "ok")
+                return {k: list(set(v)) for k, v in history.items()}
+    except Exception:
+        pass
+
+    log("  DNS 历史查询无结果（免费 API 限制）", "warn")
+    return history
+
+
+# ══════════════════════════════════════════════════════════════
+#  模块 12：ICP 备案查询
+# ══════════════════════════════════════════════════════════════
+
+def query_icp(domain):
+    """
+    查询域名 ICP 备案信息（中国）
+
+    查同一备案主体下的其他域名，发现同一公司但被遗忘的子站。
+    """
+    log("  查询 ICP 备案信息...")
+    try:
+        # 使用公开的 ICP 查询 API
+        resp = requests.get(
+            f"https://api.regini.cn/api/icp?domain={domain}",
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("code") == 200:
+                info = {
+                    "unit": data.get("data", {}).get("unitName", ""),
+                    "icp": data.get("data", {}).get("icp", ""),
+                    "unit_type": data.get("data", {}).get("unitType", ""),
+                }
+                log(f"  ICP 备案 → {info['unit']} ({info['icp']})", "ok")
+                return info
+    except Exception:
+        pass
+
+    # 备选：工信部官网查询
+    try:
+        resp = requests.get(
+            "https://beian.miit.gov.cn/",
+            timeout=10,
+            headers={"User-Agent": HEADERS["User-Agent"]},
+        )
+        if resp.status_code == 200:
+            # 工信部网站可以查备案，但需要解析验证码，较复杂
+            log("  ICP 备案查询需手动访问 beian.miit.gov.cn", "info")
+    except Exception:
+        pass
+
+    return {}
 
 def generate_report(domain, resolved, all_ips, asn_info, open_ports,
                     services, http_results, fofa_results):
@@ -1078,10 +1297,10 @@ a:hover {{ text-decoration: underline; }}
 
 
 # ══════════════════════════════════════════════════════════════
-#  模块 10：轻量模式（供 recon.py 调用）
+#  模块 14：轻量模式（供 recon.py 调用）
 # ══════════════════════════════════════════════════════════════
 
-def run_quick(domain, output_dir=None):
+def run_quick(domain, output_dir=None, skip_history=False, skip_js=False):
     """
     轻量模式 — 仅做子域名收集 + DNS 解析 + HTTP 探测
     供 recon.py 调用，也支持独立使用
@@ -1117,6 +1336,21 @@ def run_quick(domain, output_dir=None):
     # 4. HTTP 探测
     http_results = http_probe(list(resolved.keys()))
     save_json(http_results, f"{domain}_http.json")
+
+    # 5. Wayback Machine 历史记录
+    wayback_data = {}
+    if not skip_history:
+        wayback_data = fetch_wayback_urls(domain)
+        if wayback_data and wayback_data.get("paths"):
+            save_json(wayback_data, f"{domain}_wayback.json")
+
+    # 6. JS 自动扒接口（对第一个 HTTP 可达的站点做）
+    js_results = {}
+    if not skip_js and http_results:
+        first_url = http_results[0].get("url") or f"https://{http_results[0]['subdomain']}"
+        js_results = analyze_js(first_url)
+        if js_results and js_results.get("endpoints"):
+            save_json(js_results, f"{domain}_js_analysis.json")
 
     # 快速报告
     report_file = OUTPUT_DIR / f"{domain}_quick_report.txt"
@@ -1250,7 +1484,34 @@ def run_full(domain, args):
     # 9. FOFA 查询
     fofa_results = fofa_query(domain, Config.FOFA_EMAIL, Config.FOFA_KEY)
 
-    # 10. 生成报告
+    # 10. Wayback Machine 历史记录
+    wayback_data = {}
+    if not args.skip_history:
+        wayback_data = fetch_wayback_urls(domain)
+        if wayback_data and wayback_data.get("paths"):
+            save_json(wayback_data, f"{domain}_wayback.json")
+
+    # 11. DNS 历史记录查询
+    dns_history = {}
+    if not args.skip_history:
+        dns_history = query_dns_history(domain)
+        if dns_history and dns_history.get("a"):
+            save_json(dns_history, f"{domain}_dns_history.json")
+
+    # 12. ICP 备案查询
+    icp_info = query_icp(domain)
+    if icp_info:
+        save_json(icp_info, f"{domain}_icp.json")
+
+    # 13. JS 自动扒接口（只对第一个 HTTP 可达的站点做）
+    js_results = {}
+    if not args.skip_js and http_results:
+        first_url = http_results[0].get("url") or f"https://{http_results[0]['subdomain']}"
+        js_results = analyze_js(first_url)
+        if js_results and js_results.get("endpoints"):
+            save_json(js_results, f"{domain}_js_analysis.json")
+
+    # 14. 生成报告
     generate_report(domain, resolved, all_ips, asn_info, open_ports,
                     services, http_results, fofa_results)
     generate_html_report(domain, resolved, all_ips, asn_info, open_ports,
@@ -1284,6 +1545,8 @@ def main():
                         help="端口扫描引擎: nmap（默认，半开扫描，痕迹少）/ thread（纯Python）")
     parser.add_argument("--skip-portscan", action="store_true", help="跳过端口扫描")
     parser.add_argument("--skip-service", action="store_true", help="跳过服务识别")
+    parser.add_argument("--skip-history", action="store_true", help="跳过历史记录查询（Wayback/DNS）")
+    parser.add_argument("--skip-js", action="store_true", help="跳过 JS 分析")
     parser.add_argument("--subdomain-only", action="store_true", help="仅收集子域名")
     parser.add_argument("--ports", type=str, help="自定义端口列表，逗号分隔")
     parser.add_argument("-o", "--output", type=str, help="输出目录（默认 ./results）")
@@ -1334,7 +1597,7 @@ def main():
             print()  # 多域名间空行分隔
 
         if args.quick:
-            run_quick(domain, str(OUTPUT_DIR))
+            run_quick(domain, str(OUTPUT_DIR), args.skip_history, args.skip_js)
         else:
             run_full(domain, args)
 
