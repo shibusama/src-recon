@@ -114,6 +114,98 @@ asset_recon.py 的 http_probe() 自动做这件事
   P3 ⚪ 官网主站 ← 无数人 7x24 扫，最后再碰
 ```
 
+## 三、单子域名深度分析流程（拿到一个子域名后怎么做）
+
+### 第 1 步：基础探测（5 分钟）
+
+```
+工具：curl / requests
+目标：摸清这个站是什么
+
+看什么：
+  ✅ HTTP 状态码（200/403/401/404 各代表什么）
+  ✅ Server 头（Nginx / IIS / Tomcat / cloudflare）
+  ✅ 页面标题（HTML title 标签）
+  ✅ 响应头（X-Powered-By、Set-Cookie、CSP）
+  ✅ 页面技术栈（WordPress / ThinkPHP / ASP.NET / Vue）
+
+做的操作：
+  curl -s -I https://target.com
+  curl -s https://target.com | grep -i '<title\|generator\|wp-content\|\.js'
+```
+
+### 第 2 步：JS 源码挖掘（10 分钟）
+
+```
+工具：JSFinder / 手动扒
+目标：从 JS 里找隐藏接口
+
+看什么：
+  ✅ API baseURL 路径
+  ✅ 路由表（/home、/admin、/user）
+  ✅ WebSocket 地址
+  ✅ 内网域名/IP 泄露
+  ✅ 密钥 / Token / 硬编码密码
+  ✅ AJAX / fetch / axios 请求的 URL
+
+做的操作：
+  下载 app.js → 搜 axios、fetch、baseURL、api、token、ws://、secret
+```
+
+### 第 3 步：API 路径枚举（10 分钟）
+
+```
+工具：requests 脚本 / dirsearch
+目标：找到真实存在的接口
+
+看什么：
+  401 → 接口存在，需要认证（最有价值）
+  400 → 接口存在，参数格式不对
+  403 → 可能被 WAF 或 IP 限制
+  404 → 路径不存在
+  200 → 可访问
+
+做的操作：
+  扫 /api /user/login /swagger /actuator /health /druid
+  根据状态码判断接口是否存在（401 > 400 > 403 > 404）
+```
+
+### 第 4 步：接口测试（15 分钟）
+
+```
+工具：Burp Suite
+目标：判断接口有没有鉴权漏洞
+
+看什么：
+  ✅ 不加 Token 能否访问（未授权）
+  ✅ 改 user_id / id 参数（越权）
+  ✅ 不同的 Content-Type（json / form / xml）
+  ✅ HTTP 方法替换（GET ↔ POST ↔ PUT ↔ DELETE）
+
+做的操作：
+  直接访问 401 接口 → 看返回（可能是未授权）
+  POST 登录接口 → 看错误提示（用户名枚举？）
+  改参数格式 → 看变化（400 变 401 说明猜对了格式）
+```
+
+### 第 5 步：周边关联（5 分钟）
+
+```
+工具：asset_recon.py / crt.sh
+目标：这个系统和别的资产有没有关系
+
+看什么：
+  ✅ 同一 IP 的其他端口
+  ✅ 同类型子域名
+  ✅ 内网地址泄露进一步利用
+  ✅ 备案主体下的其他域名
+
+做的操作：
+  nmap 扫 IP 的其他端口
+  crt.sh 查通配符证书下的其他子域名
+  搜同 IP 的旁站
+```
+
 ---
 
 ## 三、扫描策略与细节战
