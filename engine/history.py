@@ -46,6 +46,20 @@ def fetch_wayback_urls(domain, limit=500):
     return {"urls": [], "paths": []}
 
 
+def extract_wayback_subdomains(wayback_data, main_domain):
+    """从 Wayback Machine 结果中提取子域名"""
+    from urllib.parse import urlparse
+    subs = set()
+    for url in wayback_data.get("urls", []):
+        try:
+            host = urlparse(url).hostname
+            if host and host.endswith(f".{main_domain}") and "*" not in host:
+                subs.add(host.lower())
+        except Exception:
+            continue
+    return sorted(subs)
+
+
 def query_dns_history(domain):
     log("  查询 DNS 历史记录...")
     history = {"a": []}

@@ -6,6 +6,8 @@
   "default_mode": "full",
   "workers": 50,
   "output_dir": "results",
+
   "fofa_email": "",
-  "fofa_key": ""
+  "fofa_key": "",
+  "hunter_key": ""
 }

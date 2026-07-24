@@ -2,13 +2,54 @@
 """
 步骤 1：资产收集 — 子域名收集（被动 6 源 + DNS 爆破）
 
+功能：
+  通过 6 个公开数据源被动收集目标域名的所有已知子域名，并结合 DNS 字典
+  爆破发现更多子域名。所有结果去重后输出为 JSON 文件。
+
+数据源：
+  - crt.sh         证书透明度日志（Certificate Transparency）
+  - HackerTarget   被动 DNS 数据库
+  - RapidDNS       DNS 记录聚合平台
+  - AlienVault OTX 威胁情报被动 DNS
+  - DNSDumpster    DNS 侦察工具
+  - BufferOver.run DNS 数据集
+  - Subfinder      30+ 数据源被动收集
+  - OneForAll      几十数据源被动收集 + 爆破
+
+核心函数：
+  - crt_sh(domain)                   查询 crt.sh 证书透明度日志
+  - hackertarget(domain)             查询 HackerTarget 被动 DNS
+  - rapiddns(domain)                 查询 RapidDNS 子域名记录
+  - alienvault_otx(domain)           查询 AlienVault OTX 被动 DNS
+  - dnsdumpster(domain)              查询 DNSDumpster 侦察结果
+  - bufferover(domain)               查询 BufferOver.run DNS 数据集
+  - run_subfinder(domain)            调用 Subfinder CLI 收集
+  - run_oneforall(domain)            调用 OneForAll CLI 收集
+  - collect_passive(domain)          汇总所有被动源结果（去重）
+  - dns_resolve(subdomain)           DNS A 记录解析（用于爆破验证）
+  - brute_force_subdomains(domain)   基于字典的 DNS 爆破（183 个常见子域名）
+
 用法：
-  python3 collect.py example.com
-  python3 collect.py example.com -o /path/to/output
+  python3 collect.py example.com                     # 收集单一域名
+  python3 collect.py example.com -o /path/to/output  # 指定输出目录
+
+输出文件（保存在 results/ 目录）：
+  - {domain}_subdomains.json        纯子域名列表
+  - {domain}_subdomains_detail.json 子域名 + 对应 IP 的详细数据
+
+依赖于 engine/common.py 提供的：
+  - log()         日志输出函数
+  - save_json()   JSON 文件保存函数
+  - HEADERS       HTTP 请求头（模拟浏览器）
+  - COMMON_SUBS   183 个常见子域名字典
+  - OUTPUT_DIR    输出目录（默认 results/）
 """
 import argparse
 import concurrent.futures
+import json
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -20,6 +61,8 @@ from common import log, save_json, HEADERS, COMMON_SUBS, OUTPUT_DIR
 
 
 requests.packages.urllib3.disable_warnings()
+
+ONEFORALL_DIR = Path.home() / "tools" / "OneForAll"
 
 
 # ── 被动收集 ────────────────────────────────────────────────
@@ -147,9 +190,76 @@ def bufferover(domain):
     return set()
 
 
+def run_subfinder(domain):
+    """调用 Subfinder 收集子域名（30+ 数据源）"""
+    if not shutil.which("subfinder"):
+        log("  Subfinder 未安装，跳过", "warn")
+        return set()
+    log("  调用 Subfinder...")
+    try:
+        result = subprocess.run(
+            ["subfinder", "-d", domain, "-silent", "-timeout", "60"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            log(f"  Subfinder 执行失败: {result.stderr.strip()}", "warn")
+            return set()
+        subs = set()
+        for line in result.stdout.strip().split("\n"):
+            line = line.strip().lower()
+            if line.endswith(f".{domain}") and line != domain:
+                subs.add(line)
+        log(f"  Subfinder → {len(subs)} 个子域名", "ok")
+        return subs
+    except subprocess.TimeoutExpired:
+        log("  Subfinder 超时", "warn")
+    except Exception as e:
+        log(f"  Subfinder 出错: {e}", "warn")
+    return set()
+
+
+def run_oneforall(domain):
+    """调用 OneForAll 收集子域名（通过 run_collect.py 轻量入口）"""
+    if not ONEFORALL_DIR.exists():
+        log("  OneForAll 未安装，跳过", "warn")
+        return set()
+    wrapper = ONEFORALL_DIR / "run_collect.py"
+    if not wrapper.exists():
+        log("  OneForAll 入口脚本不存在", "warn")
+        return set()
+    log("  调用 OneForAll...")
+    try:
+        result = subprocess.run(
+            [sys.executable, str(wrapper), domain],
+            capture_output=True, text=True, timeout=90,
+        )
+        if result.returncode != 0:
+            err = result.stderr.strip()[:200]
+            log(f"  OneForAll 执行异常: {err}", "warn")
+            # stdout 中可能仍有 JSON 结果
+        subs = set()
+        try:
+            data = json.loads(result.stdout.strip() or "[]")
+            for sub in data:
+                sub = sub.strip().lower()
+                if sub.endswith(f".{domain}") and "*" not in sub:
+                    subs.add(sub)
+        except json.JSONDecodeError:
+            log("  OneForAll 输出解析失败", "warn")
+        if subs:
+            log(f"  OneForAll → {len(subs)} 个子域名", "ok")
+        return subs
+    except subprocess.TimeoutExpired:
+        log("  OneForAll 超时（90秒）", "warn")
+    except Exception as e:
+        log(f"  OneForAll 出错: {e}", "warn")
+    return set()
+
+
 def collect_passive(domain):
     all_subs = set()
-    collectors = [crt_sh, hackertarget, rapiddns, alienvault_otx, dnsdumpster, bufferover]
+    collectors = [crt_sh, hackertarget, rapiddns, alienvault_otx, dnsdumpster, bufferover,
+                   run_subfinder, run_oneforall]
     for func in collectors:
         subs = func(domain)
         all_subs.update(subs)
@@ -202,7 +312,7 @@ def main():
     if args.output:
         global OUTPUT_DIR
         OUTPUT_DIR = Path(args.output)
-        OUTPUT_DIR.mkdir(exist_ok=True)
+    OUTPUT_DIR.mkdir(exist_ok=True)
 
     domain = args.domain.strip()
     if domain.startswith("http"):

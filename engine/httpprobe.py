@@ -138,8 +138,8 @@ def http_probe_ports(open_ports):
 
 # ── JS 分析 ──────────────────────────────────────────────────
 
-def analyze_js(url):
-    results = {"endpoints": [], "paths": [], "secrets": []}
+def analyze_js(url, main_domain=None):
+    results = {"endpoints": [], "paths": [], "secrets": [], "subdomains": []}
     try:
         resp = requests.get(url, headers=HEADERS, timeout=10, verify=False)
         if resp.status_code != 200:
@@ -187,8 +187,18 @@ def analyze_js(url):
             if len(s) >= 20 and not s.isdigit():
                 secrets.add(s[:50])
 
-        log(f"  JS 分析 → {len(js_urls)} 个文件, {len(endpoints)} 接口, {len(paths)} 路径", "ok")
-        return {"endpoints": sorted(endpoints), "paths": sorted(paths), "secrets": sorted(secrets)[:20]}
+        # 从 JS 中提取子域名
+        js_subdomains = set()
+        if main_domain:
+            escaped = re.escape(main_domain)
+            for m in re.finditer(r'["\'`]([a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.' + escaped + r')["\'`]', all_js):
+                js_subdomains.add(m.group(1).lower())
+            # 也找 wss:// 和 https:// 中的子域名
+            for m in re.finditer(r'(?:https?|wss?)://([a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.' + escaped + r')', all_js):
+                js_subdomains.add(m.group(1).lower())
+        log(f"  JS 分析 → {len(js_urls)} 个文件, {len(endpoints)} 接口, {len(js_subdomains)} 子域名", "ok")
+        return {"endpoints": sorted(endpoints), "paths": sorted(paths), "secrets": sorted(secrets)[:20],
+                "subdomains": sorted(js_subdomains)}
     except Exception as e:
         log(f"  JS 分析失败: {e}", "warn")
         return results
@@ -240,7 +250,7 @@ def main():
     if not args.skip_js and http_results:
         first = http_results[0]
         first_url = first.get("url") or f"https://{first['subdomain']}"
-        js_results = analyze_js(first_url)
+        js_results = analyze_js(first_url, main_domain=domain)
         if js_results.get("endpoints") or js_results.get("paths"):
             save_json(js_results, f"{domain}_js_analysis.json")
 
