@@ -6,7 +6,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-OUTPUT_DIR = Path(__file__).parent / "results"
+OUTPUT_DIR = Path(__file__).parent.parent / "results"
 
 HEADERS = {
     "User-Agent": (

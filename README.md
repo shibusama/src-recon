@@ -6,19 +6,20 @@
 
 ```
 src-recon/
-├── asset_recon.py     ← 总调度：一键执行所有步骤
-├── recon.py           ← 轻量版入口（快速摸底）
-├── config.json        ← 目标域名配置文件
+├── run.py               ← 统一入口：一键执行所有步骤
+├── config.json          ← 目标域名配置文件
 │
-├── common.py          ← 公共模块（配置/常量/工具函数）
-├── collect.py         ← 步骤1：子域名收集
-├── resolve.py         ← 步骤2：DNS解析 + ASN查询
-├── scan.py            ← 步骤3：端口扫描 + 服务识别
-├── httpprobe.py       ← 步骤4：HTTP探测 + 指纹 + JS分析
-├── history.py         ← 步骤5：历史记录（Wayback/DNS历史/ICP）
-├── report.py          ← 步骤6：报告生成（TXT + HTML）
+├── engine/              ← 核心引擎模块
+│   ├── __init__.py
+│   ├── common.py        ← 公共模块（配置/常量/工具函数）
+│   ├── collect.py       ← 步骤1：子域名收集
+│   ├── resolve.py       ← 步骤2：DNS解析 + ASN查询
+│   ├── scan.py          ← 步骤3：端口扫描 + 服务识别
+│   ├── httpprobe.py     ← 步骤4：HTTP探测 + 指纹 + JS分析
+│   ├── history.py       ← 步骤5：历史记录（Wayback/DNS历史/ICP）
+│   └── report.py        ← 步骤6：报告生成（TXT + HTML）
 │
-└── results/           ← 扫描结果输出目录
+└── results/             ← 扫描结果输出目录
 ```
 
 ## 快速开始
@@ -34,11 +35,10 @@ pip install dnspython requests pyyaml beautifulsoup4
 
 ```bash
 # 全流程一键扫描
-python3 asset_recon.py example.com
+python3 run.py example.com
 
 # 快速摸底（只跑 1→2→4→6，约2分钟）
-python3 asset_recon.py --quick example.com
-python3 recon.py example.com
+python3 run.py --quick example.com
 ```
 
 ### 方式二：配置文件
@@ -55,8 +55,8 @@ python3 recon.py example.com
 然后直接运行：
 
 ```bash
-python3 asset_recon.py              # 扫描第一个域名
-python3 asset_recon.py --batch      # 扫描所有域名
+python3 run.py              # 扫描第一个域名
+python3 run.py --batch      # 扫描所有域名
 ```
 
 ### 方式三：单步执行
@@ -64,24 +64,24 @@ python3 asset_recon.py --batch      # 扫描所有域名
 每一步可独立运行，上一步的输出自动作为下一步的输入：
 
 ```bash
-python3 collect.py example.com      # 1. 只要子域名
-python3 resolve.py example.com      # 2. 只做DNS解析
-python3 scan.py example.com         # 3. 只扫端口
-python3 httpprobe.py example.com    # 4. 只做HTTP探测
-python3 history.py example.com      # 5. 只查历史记录
-python3 report.py example.com       # 6. 只生成报告
+python3 engine/collect.py example.com      # 1. 只要子域名
+python3 engine/resolve.py example.com      # 2. 只做DNS解析
+python3 engine/scan.py example.com         # 3. 只扫端口
+python3 engine/httpprobe.py example.com    # 4. 只做HTTP探测
+python3 engine/history.py example.com      # 5. 只查历史记录
+python3 engine/report.py example.com       # 6. 只生成报告
 ```
 
 ## 执行步骤详解
 
 | 步骤 | 脚本 | 功能 | 输入 | 输出 |
 |:----:|------|------|------|------|
-| 1 | `collect.py` | 子域名收集（6被动源 + DNS爆破） | 域名 | subdomains.json |
-| 2 | `resolve.py` | DNS解析 + ASN组织查询 | subdomains | resolved.json, ips.json, asn.json |
-| 3 | `scan.py` | 端口扫描（nmap/threading）+ 服务识别 | ips | ports.json, services.json |
-| 4 | `httpprobe.py` | HTTP探测 + 指纹识别 + JS自动分析 | resolved | http.json, js_analysis.json |
-| 5 | `history.py` | Wayback历史/DNS历史/ICP备案 | 域名 | wayback.json, dns_history.json |
-| 6 | `report.py` | TXT + HTML 报告生成 | 各JSON | report.txt, report.html |
+| 1 | `engine/collect.py` | 子域名收集（6被动源 + DNS爆破） | 域名 | subdomains.json |
+| 2 | `engine/resolve.py` | DNS解析 + ASN组织查询 | subdomains | resolved.json, ips.json, asn.json |
+| 3 | `engine/scan.py` | 端口扫描（nmap/threading）+ 服务识别 | ips | ports.json, services.json |
+| 4 | `engine/httpprobe.py` | HTTP探测 + 指纹识别 + JS自动分析 | resolved | http.json, js_analysis.json |
+| 5 | `engine/history.py` | Wayback历史/DNS历史/ICP备案 | 域名 | wayback.json, dns_history.json |
+| 6 | `engine/report.py` | TXT + HTML 报告生成 | 各JSON | report.txt, report.html |
 
 ### 步骤1：子域名收集
 
@@ -104,8 +104,8 @@ python3 report.py example.com       # 6. 只生成报告
 双引擎可选：
 
 ```bash
-python3 scan.py example.com --scanner nmap     # nmap SYN半开扫描（默认，痕迹少）
-python3 scan.py example.com --scanner thread    # Python TCP扫描（免装）
+python3 engine/scan.py example.com --scanner nmap     # nmap SYN半开扫描（默认，痕迹少）
+python3 engine/scan.py example.com --scanner thread    # Python TCP扫描（免装）
 ```
 
 对开放端口进行 Banner 抓取，识别 MySQL/Redis/Nginx/Tomcat 等服务。
@@ -129,7 +129,7 @@ python3 scan.py example.com --scanner thread    # Python TCP扫描（免装）
 ## 参数说明
 
 ```bash
-python3 asset_recon.py [域名] [选项]
+python3 run.py [域名] [选项]
 
 选项：
   --quick                    快速模式（跳过端口扫描/服务识别/部分历史）
@@ -148,11 +148,11 @@ python3 asset_recon.py [域名] [选项]
 
 ## 使用建议
 
-- **快速摸底** → `python3 recon.py example.com` 或 `python3 asset_recon.py --quick example.com`
-- **全面收集** → `python3 asset_recon.py example.com`（端口扫描、服务识别、历史记录全开）
-- **定向任务** → `python3 collect.py example.com`（只要子域名）
-- **日常顺手** → 把常用目标写进 `config.json`，直接 `python3 asset_recon.py`
-- **批量巡检** → `python3 asset_recon.py --batch --quick` 一键跑完所有目标
+- **快速摸底** → `python3 run.py --quick example.com`
+- **全面收集** → `python3 run.py example.com`（端口扫描、服务识别、历史记录全开）
+- **定向任务** → `python3 engine/collect.py example.com`（只要子域名）
+- **日常顺手** → 把常用目标写进 `config.json`，直接 `python3 run.py`
+- **批量巡检** → `python3 run.py --batch --quick` 一键跑完所有目标
 
 ## 注意事项
 
