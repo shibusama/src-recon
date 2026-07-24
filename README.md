@@ -1,13 +1,25 @@
 # SRC-Recon | SRC 资产收集工具集
 
-> 面向 SRC 漏洞挖掘的自动化资产收集工具集，支持子域名枚举、DNS 解析、ASN 查询、端口扫描、服务识别、HTTP 探测和指纹识别。
+> 面向 SRC 漏洞挖掘的自动化资产收集工具集。按步骤拆分，每一步可独立运行。
 
-## 工具列表
+## 项目结构
 
-| 脚本 | 类型 | 说明 |
-|------|------|------|
-| `asset_recon.py` | 综合版 | **推荐** — 全部功能：子域名收集 + DNS 爆破 + ASN 查询 + 端口扫描 + 服务识别 + HTTP 探测 + 指纹识别 + FOFA 接口 |
-| `recon.py` | 轻量版 | 快速摸底，子域名收集 + HTTP 探测（复用 asset_recon.py） |
+```
+src-recon/
+├── asset_recon.py     ← 总调度：一键执行所有步骤
+├── recon.py           ← 轻量版入口（快速摸底）
+├── config.json        ← 目标域名配置文件
+│
+├── common.py          ← 公共模块（配置/常量/工具函数）
+├── collect.py         ← 步骤1：子域名收集
+├── resolve.py         ← 步骤2：DNS解析 + ASN查询
+├── scan.py            ← 步骤3：端口扫描 + 服务识别
+├── httpprobe.py       ← 步骤4：HTTP探测 + 指纹 + JS分析
+├── history.py         ← 步骤5：历史记录（Wayback/DNS历史/ICP）
+├── report.py          ← 步骤6：报告生成（TXT + HTML）
+│
+└── results/           ← 扫描结果输出目录
+```
 
 ## 快速开始
 
@@ -15,186 +27,138 @@
 
 ```bash
 pip install dnspython requests pyyaml beautifulsoup4
+# 如需 nmap 引擎：pip install python-nmap（同时也需要安装 nmap 本体）
 ```
 
-### 方式一：指定域名（最常用）
+### 方式一：指定域名
 
 ```bash
-# 全面扫描
+# 全流程一键扫描
 python3 asset_recon.py example.com
 
-# 快速摸底
+# 快速摸底（只跑 1→2→4→6，约2分钟）
+python3 asset_recon.py --quick example.com
 python3 recon.py example.com
 ```
 
-### 方式二：配置文件（批量管理目标）
+### 方式二：配置文件
 
-编辑 `config.json` 放入你的目标列表：
+编辑 `config.json` 放入目标列表：
 
 ```json
 {
-  "domains": ["target1.com", "target2.org", "target3.io"],
+  "domains": ["target1.com", "target2.org"],
   "workers": 50
 }
 ```
 
-然后直接运行脚本（无需输入域名）：
+然后直接运行：
 
 ```bash
-# 扫描 config 中的第一个域名
-python3 asset_recon.py
-
-# 扫描 config 中所有域名
-python3 asset_recon.py --batch
-
-# 批量快速摸底所有域名
-python3 asset_recon.py --batch --quick
-python3 recon.py --batch
+python3 asset_recon.py              # 扫描第一个域名
+python3 asset_recon.py --batch      # 扫描所有域名
 ```
 
-### asset_recon.py（综合版）
+### 方式三：单步执行
+
+每一步可独立运行，上一步的输出自动作为下一步的输入：
 
 ```bash
-# 全量扫描（推荐）
-python3 asset_recon.py example.com
-
-# 从配置文件读取域名
-python3 asset_recon.py
-
-# 批量扫描所有配置域名
-python3 asset_recon.py --batch
-
-# 快速模式（仅子域名 + HTTP 探测）
-python3 asset_recon.py example.com --quick
-python3 asset_recon.py --batch --quick
-
-# 跳过端口扫描和服务识别
-python3 asset_recon.py example.com --skip-portscan --skip-service
-
-# 仅子域名收集
-python3 asset_recon.py example.com --subdomain-only
-
-# 指定端口
-python3 asset_recon.py example.com --ports 80,443,8080,8443
-
-# 指定输出目录
-python3 asset_recon.py example.com -o ./my_results
-
-# 配置 FOFA API
-python3 asset_recon.py example.com --fofa-email your@email.com --fofa-key your_api_key
-
-# 使用自定义配置文件
-python3 asset_recon.py --config my_domains.json --batch
-
-# 调整并发数
-python3 asset_recon.py example.com --workers 100
+python3 collect.py example.com      # 1. 只要子域名
+python3 resolve.py example.com      # 2. 只做DNS解析
+python3 scan.py example.com         # 3. 只扫端口
+python3 httpprobe.py example.com    # 4. 只做HTTP探测
+python3 history.py example.com      # 5. 只查历史记录
+python3 report.py example.com       # 6. 只生成报告
 ```
 
-### recon.py（轻量版 — 快速摸底）
+## 执行步骤详解
 
-```bash
-# 用法同 --quick，适合随手摸一下
-python3 recon.py example.com
-python3 recon.py              # 从 config.json 读取域名
-python3 recon.py --batch      # 批量快速摸底
-```
+| 步骤 | 脚本 | 功能 | 输入 | 输出 |
+|:----:|------|------|------|------|
+| 1 | `collect.py` | 子域名收集（6被动源 + DNS爆破） | 域名 | subdomains.json |
+| 2 | `resolve.py` | DNS解析 + ASN组织查询 | subdomains | resolved.json, ips.json, asn.json |
+| 3 | `scan.py` | 端口扫描（nmap/threading）+ 服务识别 | ips | ports.json, services.json |
+| 4 | `httpprobe.py` | HTTP探测 + 指纹识别 + JS自动分析 | resolved | http.json, js_analysis.json |
+| 5 | `history.py` | Wayback历史/DNS历史/ICP备案 | 域名 | wayback.json, dns_history.json |
+| 6 | `report.py` | TXT + HTML 报告生成 | 各JSON | report.txt, report.html |
 
-## 功能模块对比
+### 步骤1：子域名收集
 
-| 功能 | asset_recon.py | recon.py |
-|------|:-:|:-:|
-| 子域名被动收集（6 源） | ✅ | ✅ |
-| DNS 爆破 | ✅ | ✅ |
-| DNS 解析验证 | ✅ | ✅ |
-| ASN / 组织查询 | ✅ | ❌ |
-| 端口扫描 | ✅ | ❌ |
-| 服务识别 | ✅ | ❌ |
-| HTTP 探测 | ✅ | ✅ |
-| 指纹识别（CMS/WAF/框架） | ✅ | ✅ |
-| FOFA 接口 | ✅ | ❌ |
-| 报告生成 | ✅ | ✅ |
-
-### 各模块说明
-
-**1. 子域名收集（被动）**
-
-通过以下公开数据源被动收集子域名，无需直接扫描目标：
+通过以下 6 个公开数据源被动收集 + DNS 爆破：
 
 - **crt.sh** — 证书透明度日志
 - **HackerTarget** — 被动 DNS 查询
 - **RapidDNS** — DNS 记录聚合
 - **AlienVault OTX** — 威胁情报平台
-- **BufferOver.run** — DNS 数据集
 - **DNSDumpster** — DNS 侦察
+- **BufferOver.run** — DNS 数据集
+- **DNS爆破** — 183 个常见子域名字典
 
-**2. DNS 解析**
+### 步骤2：DNS 解析 + ASN
 
-批量解析子域名的 A 记录，验证子域名是否有效，提取所有唯一 IP 地址。
+批量解析 A 记录，提取唯一 IP，通过 ipinfo.io 查询 ASN/组织归属。
 
-**3. ASN / 组织查询（asset_recon.py 独有）**
+### 步骤3：端口扫描 + 服务识别
 
-通过 ipinfo.io 查询每个 IP 的 ASN 编号、所属组织、国家/城市信息，帮助识别目标的基础设施分布。
+双引擎可选：
 
-**4. 端口扫描**
-
-对收集到的 IP 进行常见端口扫描（默认 60-100+ 个端口），支持自定义端口列表。
-
-**5. 服务识别**
-
-对开放端口进行 Banner 抓取和服务指纹识别，支持 HTTP/HTTPS/FTP/SSH/SMTP/MySQL/Redis/MongoDB 等常见服务。
-
-**6. HTTP 探测**
-
-对所有子域名进行 HTTP/HTTPS 探测，获取状态码、页面标题、Server 头等信息。
-
-**7. 指纹识别**
-
-识别目标使用的 CMS（WordPress、Drupal 等）、Web 框架（Spring、Django、Vue 等）、中间件（Nginx、Tomcat 等）和 WAF（Cloudflare、Akamai 等）。通过响应头和页面内容进行匹配。
-
-**8. FOFA 接口（asset_recon.py 独有）**
-
-支持对接 FOFA API，通过 `domain="example.com"` 语法查询 FOFA 资产库。
-
-## 输出文件
-
-所有结果保存在 `results/` 目录下：
-
-| 文件 | 说明 |
-|------|------|
-| `{domain}_subdomains.json` | 子域名及对应 IP |
-| `{domain}_asn.json` | ASN 和组织信息 |
-| `{domain}_ports.json` | 开放端口 |
-| `{domain}_services.json` | 服务识别结果 |
-| `{domain}_http.json` | HTTP 探测结果（含指纹） |
-| `{domain}_http_ports.json` | 基于端口的 HTTP 探测结果 |
-| `{domain}_full_report.txt` | 综合文本报告（full 模式） |
-| `{domain}_quick_report.txt` | 快速摸底报告（--quick 模式） |
-
-## 项目结构
-
+```bash
+python3 scan.py example.com --scanner nmap     # nmap SYN半开扫描（默认，痕迹少）
+python3 scan.py example.com --scanner thread    # Python TCP扫描（免装）
 ```
-src-recon/
-├── README.md
-├── .gitignore
-├── asset_recon.py              # [推荐] 综合版（全部功能）
-├── recon.py                    # 轻量版（复用 asset_recon.py）
-└── results/                    # 收集结果输出目录
+
+对开放端口进行 Banner 抓取，识别 MySQL/Redis/Nginx/Tomcat 等服务。
+
+### 步骤4：HTTP 探测 + 指纹 + JS 分析
+
+- 每个子域名检测 HTTP/HTTPS 状态码、标题、Server 头
+- 识别 CMS（WordPress/Drupal）、框架（Spring/Vue）、WAF（Cloudflare/Akamai）
+- **自动下载并分析 JS 文件**，提取隐藏 API 接口、WebSocket 地址、密钥
+
+### 步骤5：历史记录
+
+- **Wayback Machine** — 找回下线站点的旧路径、旧接口
+- **DNS历史** — SecurityTrails/ViewDNS 查历史解析 IP
+- **ICP备案** — 查同一主体下的其他域名
+
+### 步骤6：报告生成
+
+同时输出 TXT + HTML 自包含报告，HTML 可直接浏览器打开。
+
+## 参数说明
+
+```bash
+python3 asset_recon.py [域名] [选项]
+
+选项：
+  --quick                    快速模式（跳过端口扫描/服务识别/部分历史）
+  --batch                    批量扫描 config 中所有域名
+  --scanner {nmap,thread}    端口扫描引擎（默认 nmap）
+  --skip-portscan            跳过端口扫描
+  --skip-service             跳过服务识别
+  --skip-history             跳过历史记录查询
+  --skip-js                  跳过 JS 分析
+  --skip-icp                 跳过 ICP 备案查询
+  --subdomain-only           仅收集子域名
+  --ports PORTS              自定义端口列表（逗号分隔）
+  -o, --output OUTPUT        输出目录（默认 ./results）
+  --workers WORKERS          并发数（默认 50）
 ```
 
 ## 使用建议
 
-- **快速摸底** → `python3 recon.py example.com` 或 `python3 asset_recon.py example.com --quick`
-- **全面收集** → `python3 asset_recon.py example.com`（端口扫描、服务识别、ASN、FOFA 全开）
-- **定向任务** → `python3 asset_recon.py example.com --subdomain-only`（仅看子域名）
-- **日常顺手** → 把常用目标写进 `config.json`，然后直接 `python3 recon.py`
-- **批量巡检** → 编辑 `config.json` 放入多个目标，`python3 asset_recon.py --batch --quick` 一键跑完
+- **快速摸底** → `python3 recon.py example.com` 或 `python3 asset_recon.py --quick example.com`
+- **全面收集** → `python3 asset_recon.py example.com`（端口扫描、服务识别、历史记录全开）
+- **定向任务** → `python3 collect.py example.com`（只要子域名）
+- **日常顺手** → 把常用目标写进 `config.json`，直接 `python3 asset_recon.py`
+- **批量巡检** → `python3 asset_recon.py --batch --quick` 一键跑完所有目标
 
 ## 注意事项
 
 - 本工具仅供授权的安全测试和 SRC 漏洞挖掘使用
 - 请遵守目标网站的 robots.txt 和使用条款
 - 端口扫描可能触发安全告警，请在授权范围内使用
-- FOFA API 需要自行注册并获取 API Key
 
 ## License
 
