@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-资产收集工具 — 总调度
+SRC 资产收集工具 — 统一入口
 按步骤依次执行：收集 → 解析 → 扫描 → HTTP → 历史 → 报告
 
 用法：
-  python3 asset_recon.py example.com        # 全流程
-  python3 asset_recon.py --quick example.com # 快速摸底
-  python3 asset_recon.py --batch             # 批量扫描 config 中所有域名
+  python3 run.py example.com              # 全流程
+  python3 run.py --quick example.com      # 快速摸底
+  python3 run.py                          # 从 config.json 读取域名
+  python3 run.py --batch                  # 批量扫描配置中所有域名
 """
 import argparse
 import re
@@ -15,14 +16,14 @@ import sys
 import time
 from pathlib import Path
 
-from common import log, load_config, OUTPUT_DIR
+from engine.common import log, load_config, OUTPUT_DIR
 
 
 def run_step(step_name, *args):
     """运行一个步骤脚本，传递参数"""
-    script = Path(__file__).parent / f"{step_name}.py"
+    script = Path(__file__).parent / "engine" / f"{step_name}.py"
     if not script.exists():
-        log(f"步骤脚本不存在: {step_name}.py", "err")
+        log(f"步骤脚本不存在: engine/{step_name}.py", "err")
         return False
 
     cmd = [sys.executable, str(script)] + list(args)
@@ -119,14 +120,14 @@ def run_full(domain, args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="SRC 资产收集工具 — 步骤化总调度",
+        description="SRC 资产收集工具 — 统一入口",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "示例:\n"
-            "  python3 asset_recon.py example.com\n"
-            "  python3 asset_recon.py --quick example.com\n"
-            "  python3 asset_recon.py --batch\n"
-            "  python3 asset_recon.py --skip-portscan --skip-service\n"
+            "  python3 run.py example.com\n"
+            "  python3 run.py --quick example.com\n"
+            "  python3 run.py --batch\n"
+            "  python3 run.py --skip-portscan --skip-service\n"
         ),
     )
     parser.add_argument("domain", nargs="?", help="目标域名（留空则从 config.json 读取）")
@@ -177,9 +178,8 @@ def main():
             run_quick(domain, str(args.output) if args.output else None,
                       args.skip_history, args.skip_js)
         else:
-            # 快速模式下 --skip-portscan 自动启用
             if args.subdomain_only or args.skip_portscan:
-                # 手动构建一个"仅收集+解析"的快速模式
+                # 仅收集+解析模式
                 log("=" * 50)
                 log(f"子域名收集模式: {domain}")
                 log("=" * 50)
